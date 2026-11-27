@@ -163,6 +163,8 @@ Older `auto_merge` and `auto_deploy` settings have no effect. Push, merge and de
 
 Trio keeps a single workflow and a stable task directory for Claude Code, a local dashboard, or another controller. See [the integration contract](docs/ui-integration.md) for the JSON status interface, script arguments, and approval boundaries.
 
+**Watch a run in Bridge (optional).** With [Bridge](https://github.com/Flzsh/claude-bridge) installed (the codex-bridge plugin), a Trio run shows live in its desktop app, companion bar and Claude Code pane: each phase in the lane of the agent doing it, and the plan review and the push, merge and deploy approvals answered there with one click. Trio finds Bridge by itself; without it nothing changes. `TRIO_BRIDGE=off` turns it off. See [Bridge in the workflow UI contract](plugins/trio-claude-gemini-codex/skills/trio-claude-gemini-codex/references/workflow-ui.md#bridge).
+
 ### What you get
 
 The task folder is local by default, including the append-only progress log. Resume with the same folder. Pull requests use a reviewed summary, acceptance criteria, and test results. If a project previously committed task artifacts, those files remain tracked until removed from the index.

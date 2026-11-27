@@ -52,7 +52,8 @@ $S/fill_prompt.py plan $T/02-plan-gemini-prompt.md REQUEST=@$T/00-request.md CON
 |---|---|
 | `doctor.sh` | Checks agy/codex/gh/git are installed and signed in (with a real Gemini round trip), and lists secret-like files |
 | `init_task.sh <slug>` | Creates a unique task folder (and config if missing); prints its path. Use `--resume <task-id>` to reuse an existing task. |
-| `flow.py` | Records phase events and revision-bound gates. See [Workflow UI contract](references/workflow-ui.md). |
+| `flow.py` | Records phase events and revision-bound gates. See [Workflow UI contract](references/workflow-ui.md). With Bridge installed, `emit` also shows each phase in Bridge. |
+| `bridge.sh <task-dir> <start|review|end> ...` | Shows the run live in Bridge (the codex-bridge plugin's app, companion and Claude Code pane) and takes the user's answers to the plan, push, merge and deploy reviews from it. Prints `BRIDGE=off` and does nothing when Bridge is not installed. |
 | `task_status.py [task-id]` | Read-only JSON for a UI or other workflow controller; lists tasks or their artifacts and recorded run states. |
 | `ask_gemini.sh [--isolated] <prompt-file> <out-file>` | Runs Gemini in plan mode. Normal mode includes a repo file list and best-effort secret exclusions. Isolated mode uses inline inputs, a temporary workspace and deny rules. Both save answers and metadata. |
 | `dispatch_codex.sh <ticket-file> <task-dir>` | Runs Codex on a ticket in its own git worktree + branch; commits its work; writes a receipt and diff stat |
@@ -70,6 +71,10 @@ Run `scripts/doctor.sh` from the repo root. If Gemini or Codex is missing or sig
 
 If doctor reports limited mode, resolve or explicitly disclose the missing prerequisites before continuing. Then run `scripts/init_task.sh <short-slug>` and write the user's request, verbatim plus your clarifications, into `00-request.md`.
 
+### Watching it in Bridge
+
+Right after `init_task.sh`, run `scripts/bridge.sh "$T" start "<the request in a few words>" --summary "<the request, short>"`. With Bridge installed, the run then shows live in its app, companion and pane: every `flow.py emit` becomes a step in that agent's lane. Without Bridge it prints `BRIDGE=off`; carry on as usual. Read every line these commands print: a `STEER=<text>` line (from `bridge.sh`, or `bridge: STEER=<text>` on stderr from `flow.py emit`) is the user's own note from Bridge. It outranks the plan where they conflict; say how you took it. When the run ends or stops, run `scripts/bridge.sh "$T" end --summary "<what came of it>"`.
+
 ## Phase 1 — Understand (Claude + Gemini scout)
 
 Investigate the request yourself: read the relevant code, data, logs, and the live product if there is one. Ask the user about genuine ambiguities now, not later.
@@ -86,6 +91,8 @@ In parallel, send Gemini the scout prompt (`prompts/scout.md`) to map relevant m
 Compare the plans point by point and write `03-synthesis.md` from `prompts/synthesis-template.md`: one merged plan plus a table recording, for each decision, which plan it came from (Claude / Gemini / both / new) and why the alternative was rejected. Be honest when Gemini's idea is better — say so and adopt it. When a plan rests on a factual claim you can check cheaply (a library works on this runtime, an API exists), check it before adopting the decision and note that you did.
 
 Show the user the merged plan and decision table. Use the gate commands in [Workflow UI contract](references/workflow-ui.md) with the content hash of `03-synthesis.md` as the revision. When the interface can accept a response during the review window, announce that local work will continue after 30 seconds, display how to hold or request changes, and open the plan gate with `--timed`. When the interface only delivers replies after the turn ends, open the gate without a timer and wait for the user.
+
+With Bridge on, after `flow.py open`, run `scripts/bridge.sh "$T" review plan "$revision" "review the plan" --summary "<n points · n choices>"` with a Bash timeout of 10 minutes. It opens the review in Bridge and records the user's answer in Trio's gate for that revision: `GATE=approve` (approved), `GATE=auto` (nobody answered: Trio's own deadline carries on), `GATE=decline` (stop and ask what instead), `GATE=steer` with `TEXT=` (held: apply the change, then open a gate for the new revision), or `GATE=waiting` (paused, held: run the same command again to keep waiting).
 
 Proceed when `flow.py check` authorizes the current plan. Describe a timeout as “continued after timeout” in the UI and integration report. A hold suspends the timer. If the plan changes, show the updated plan and open a gate for its new revision.
 
@@ -131,7 +138,7 @@ Commit on a local feature branch. Show the destination, branch, and reviewed PR 
    - Later rounds: fill the prompt with `--append` asking Codex to verify each "Fixed" item, say whether it accepts each rejection, and report only blockers and should-fix issues that are new or not actually fixed.
    - Stop at `max_review_rounds` (default 2), even if the verdict is still CHANGES_REQUESTED. Fix clear bugs from the last round, then present the remaining disputes to the user with both sides' reasoning, instead of looping. Codex often declines rejections; that is a decision for the user, not another round.
 2. **CI**: check `gh pr checks` on the latest push (re-run the tests locally too). Fix failures. Don't merge while the latest run is pending or failing.
-3. **Merge**: when review and CI are clean, show the PR and latest head SHA. Wait for explicit approval of the `merge` gate for that PR and head, then use `gh pr merge --match-head-commit <sha>`.
+3. **Merge**: when review and CI are clean, show the PR and latest head SHA. Wait for explicit approval of the `merge` gate for that PR and head, then use `gh pr merge --match-head-commit <sha>`. With Bridge on, the push, merge and deploy gates are asked there too: after `flow.py open`, run `scripts/bridge.sh "$T" review <push|merge|deploy> "$revision" "<the exact action>"` (a Bash timeout of 10 minutes). These reviews never carry on by themselves. Only `GATE=approve` records an approval; still run `flow.py check` right before acting.
 4. **Deploy**: when `deploy_command` is set, show the command, target, and merged revision. Wait for explicit approval of the `deploy` gate for those inputs before running it. With no deploy command, verify the merged branch and report the result.
 5. **Verify live**: open `live_url`, check the acceptance criteria that can be checked from outside, take screenshots, and optionally send them to Gemini with `prompts/visual-qa.md` once more. With no deploy target, verify from the merged `main` instead: run the tests and start the app once on a fresh data file. Delete test data you created so the user starts clean. Report what you verified and what you could not.
 

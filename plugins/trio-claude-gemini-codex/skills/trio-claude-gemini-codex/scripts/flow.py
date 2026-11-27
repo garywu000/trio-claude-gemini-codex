@@ -4,7 +4,9 @@
 import argparse
 import fcntl
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import time
 import uuid
@@ -13,6 +15,29 @@ import uuid
 GATE_PHASES = {"plan": 3, "push": 7, "merge": 8, "deploy": 8}
 PLAN_WAIT_MS = 30_000
 DECISIONS = {"approve": "approved", "hold": "held", "decline": "declined"}
+
+# Bridge (the codex-bridge plugin) shows a run in seven steps: ask, two plans, merge, decide,
+# build, review, check & ship. Trio's phases map onto them as in references/workflow-ui.md.
+BRIDGE_PHASES = {0: 0, 1: 0, 2: 1, 3: 2, 4: 4, 5: 4, 6: 5, 7: 6, 8: 6}
+# What each worker's box says in Bridge: while it runs, and once it is done.
+STEP_TITLES = {
+    (0, "claude"): ("checking the setup", "checked the setup"),
+    (1, "claude"): ("reading the code", "read the code"),
+    (1, "gemini"): ("scouting the code", "scouted the code"),
+    (2, "claude"): ("writing a plan", "wrote a plan"),
+    (2, "gemini"): ("writing its own plan", "wrote its own plan"),
+    (3, "claude"): ("merging the plans", "merged the plans"),
+    (4, "claude"): ("designing the screens and words", "designed the screens and words"),
+    (4, "gemini"): ("reviewing the design", "reviewed the design"),
+    (5, "claude"): ("building the frontend", "built the frontend"),
+    (5, "gemini"): ("writing acceptance tests", "wrote acceptance tests"),
+    (5, "codex"): ("building the backend", "built the backend"),
+    (6, "claude"): ("integrating and testing", "integrated and tested"),
+    (6, "gemini"): ("checking the screenshots", "checked the screenshots"),
+    (7, "claude"): ("pushing and opening the PR", "opened the PR"),
+    (8, "codex"): ("reviewing the PR", "reviewed the PR"),
+    (8, "claude"): ("merging and checking it live", "merged and checked it live"),
+}
 
 
 def append_event(log, event):
@@ -86,6 +111,53 @@ def apply_command(log, args, base):
     return current, 0 if can_proceed and current["revision"] == args.revision else 1
 
 
+def bridge_step(task_dir, event):
+    """Show a phase event as a step in Bridge through scripts/bridge.sh, when Bridge is installed.
+
+    Best effort: Trio's own record is already written, and a missing or failing Bridge never
+    changes this command's result. Bridge's lines go to stderr with a "bridge: " prefix; a
+    "bridge: STEER=<text>" line is the user's own note from Bridge.
+    """
+    phase, agent, status = event["phase"], event["agent"], event["status"]
+    running, done = STEP_TITLES.get((phase, agent), (f"working on phase {phase}", f"finished phase {phase}"))
+    state, title, summary = {
+        "running": ("running", running, None),
+        "succeeded": ("done", done, None),
+        "failed": ("failed", running, "failed"),
+        "skipped": ("done", f"skipped: {running}", None),
+        "degraded": ("done", done, "finished with a fallback"),
+    }[status]
+    # Lines from the workers of the latest earlier phase, or from the request.
+    earlier = {}
+    with (task_dir / "events.jsonl").open(encoding="utf-8") as log:
+        for line in log:
+            record = json.loads(line)
+            if record.get("type") == "phase" and record["phase"] < phase:
+                earlier.setdefault(record["phase"], [])
+                if record["agent"] not in earlier[record["phase"]]:
+                    earlier[record["phase"]].append(record["agent"])
+    after = [f"trio-p{max(earlier)}-{name}" for name in earlier[max(earlier)]] if earlier else ["ask"]
+    args = [
+        "bash", str(Path(__file__).with_name("bridge.sh")), str(task_dir), "step",
+        f"trio-p{phase}-{agent}", agent, state, title,
+        "--phase", str(BRIDGE_PHASES[phase]), "--after", ",".join(after),
+    ]
+    if summary:
+        args += ["--summary", summary]
+    env = dict(os.environ)
+    if state != "running":
+        # a finished step is reported at once; a pause in Bridge holds the next step that starts
+        env["BRIDGE_FLOW_SKIP_CHECK"] = "1"
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, env=env)
+    except OSError as exc:
+        print(f"bridge: {exc}", file=sys.stderr)
+        return
+    for line in (result.stdout + result.stderr).splitlines():
+        if line.strip() and not line.startswith("BRIDGE=off"):
+            print(f"bridge: {line}", file=sys.stderr)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -124,6 +196,10 @@ def main(argv=None):
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(event))
+    sys.stdout.flush()
+    if args.command == "emit":
+        # after the lock is released: a pause in Bridge can hold this for a while
+        bridge_step(task_dir, event)
     return code
 
 

@@ -54,6 +54,15 @@ python3 "$flow" check "$T" push "$push_revision"
 
 The UI calls `resolve ... approve` in response to a user action. Claude calls `check` immediately before the external action. Exit code 0 authorizes the matching revision. Exit code 1 means the current gate does not authorize it. Exit code 2 means invalid input or an unavailable gate. Recompute the revision just before the check and ask again when it changes.
 
+## Bridge
+
+[Bridge](https://github.com/Flzsh/claude-bridge) (the codex-bridge plugin) is a UI for this contract. `scripts/bridge.sh` drives it through Bridge's own `flow.sh`, found from `$BRIDGE_FLOW_SH` or the usual Claude Code plugin folders, so Bridge's event log, tabs, companion and buttons work for a Trio run as for its own workflows. `TRIO_BRIDGE=off` turns it off; without Bridge every command prints `BRIDGE=off` and succeeds.
+
+- `bridge.sh <task-dir> start <title>` starts a Bridge flow (size large) for the task and remembers its id in `<task-dir>/bridge-flow`.
+- `flow.py emit` mirrors each phase event as a Bridge step: id `trio-p<phase>-<agent>`, the agent's lane, the Bridge step from the table above (0 and 1 Ask, 2 Two plans, 3 Merge, 4 and 5 Build, 6 Review, 7 and 8 Check and ship), and a line from the workers of the latest earlier phase. `succeeded` and `degraded` show as done (degraded says so), `failed` as failed, `skipped` as done and named skipped. It never changes the exit code or stdout of `emit`.
+- `bridge.sh <task-dir> review <gate> <revision> <title>` opens a Bridge review for Trio's open gate of that revision and records the answer with `flow.py resolve` against that gate's `gate_id`: approve and decline as given, a requested change or a pause as `hold`. A plan review counts down with Trio's 30 seconds; push, merge and deploy reviews never carry on by themselves. If Trio's gate is for another revision, it refuses.
+- A pause in Bridge holds the next `emit` that starts work until the user resumes. A note from Bridge's steer box reaches Claude as a `STEER=` line.
+
 ## Checks for a UI PR
 
 - Include launch instructions, dependencies, and a smoke run using [the fixture](../../../../../tests/fixtures/bridge-run.jsonl). It needs no model accounts. The fixture shows a plan timeout, a failed worker with a fallback, and a push awaiting approval.
